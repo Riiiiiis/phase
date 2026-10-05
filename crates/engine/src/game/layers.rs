@@ -17592,6 +17592,144 @@ mod tests {
         );
     }
 
+    /// CR 613.1f + CR 205.3m + CR 108.3: Thranduil, the Elvenking (#7891) —
+    /// "Thranduil has all activated abilities of all Elf cards in your
+    /// graveyard." Built end-to-end through the real parser (`parse_oracle_text`
+    /// → `GrantAllActivatedAbilitiesOf { Typed(Subtype Elf, [Owned You,
+    /// InZone Graveyard]) }`) and the real `evaluate_layers` expansion.
+    ///
+    /// Discriminating along every axis of the source set:
+    ///   - subtype: an Elf card in your graveyard donates its ability, a non-Elf
+    ///     creature card there does not;
+    ///   - owner: an Elf card in the OPPONENT's graveyard does not donate, even
+    ///     with its `controller` field pointed at Thranduil's controller
+    ///     (CR 108.3 — graveyard membership is by ownership);
+    ///   - zone: an Elf creature you control on the battlefield does not donate.
+    ///
+    /// Reverting the composed graveyard arm in `grant_source_noun_phrase` makes
+    /// the clause parse to no static, flipping the static-count and positive
+    /// grant assertions.
+    #[test]
+    fn thranduil_gains_activated_abilities_of_elf_cards_in_your_graveyard() {
+        use crate::parser::oracle::parse_oracle_text;
+        use crate::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityKind, Effect, QuantityExpr,
+        };
+
+        let mut state = setup();
+
+        let thranduil = make_creature(&mut state, "Thranduil, the Elvenking", 5, 6, PlayerId(0));
+        let parsed = parse_oracle_text(
+            "Thranduil has all activated abilities of all Elf cards in your graveyard.",
+            "Thranduil, the Elvenking",
+            &[],
+            &["Creature".into()],
+            &["Elf".into(), "Noble".into()],
+        );
+        assert_eq!(
+            parsed.statics.len(),
+            1,
+            "Thranduil's grant parses to exactly one static; got {:?}",
+            parsed.statics
+        );
+        {
+            let obj = state.objects.get_mut(&thranduil).unwrap();
+            obj.card_types.subtypes.push("Elf".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            obj.static_definitions = parsed.statics.clone().into();
+        }
+
+        // Each provider gets a distinct {T}: gain N life ability so the
+        // assertions identify exactly which provider donated.
+        let gain = |n: i32| {
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: n },
+                    player: TargetFilter::Controller,
+                },
+            )
+            .cost(AbilityCost::Tap)
+        };
+        let graveyard_card = |state: &mut GameState,
+                              owner: PlayerId,
+                              name: &str,
+                              subtype: Option<&str>,
+                              ability: &AbilityDefinition| {
+            let id = create_object(state, CardId(0), owner, name.to_string(), Zone::Graveyard);
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            if let Some(subtype) = subtype {
+                obj.card_types.subtypes.push(subtype.to_string());
+            }
+            obj.base_card_types = obj.card_types.clone();
+            // Printed ability: on the base too, so a layer reset to
+            // `base_abilities` cannot make a negative assertion vacuous.
+            Arc::make_mut(&mut obj.base_abilities).push(ability.clone());
+            obj.abilities = Arc::clone(&obj.base_abilities);
+            id
+        };
+
+        // Elf card in YOUR graveyard — donates.
+        let elf_ability = gain(2);
+        graveyard_card(
+            &mut state,
+            PlayerId(0),
+            "Dead Elf",
+            Some("Elf"),
+            &elf_ability,
+        );
+
+        // Non-Elf creature card in your graveyard — excluded by the subtype.
+        let bear_ability = gain(3);
+        graveyard_card(&mut state, PlayerId(0), "Dead Bear", None, &bear_ability);
+
+        // Elf card in the OPPONENT's graveyard, controller field diverged to
+        // player 0 — excluded by `Owned { You }`.
+        let opp_elf_ability = gain(5);
+        let opp_elf = graveyard_card(
+            &mut state,
+            PlayerId(1),
+            "Opp Dead Elf",
+            Some("Elf"),
+            &opp_elf_ability,
+        );
+        state.objects.get_mut(&opp_elf).unwrap().controller = PlayerId(0);
+
+        // Elf creature you control on the battlefield — excluded by the zone.
+        let live_elf_ability = gain(7);
+        let live_elf = make_creature(&mut state, "Live Elf", 1, 1, PlayerId(0));
+        {
+            let obj = state.objects.get_mut(&live_elf).unwrap();
+            obj.card_types.subtypes.push("Elf".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            Arc::make_mut(&mut obj.base_abilities).push(live_elf_ability.clone());
+            obj.abilities = Arc::clone(&obj.base_abilities);
+        }
+
+        state.layers_dirty.mark_full();
+        evaluate_layers(&mut state);
+
+        let abilities = &state.objects.get(&thranduil).unwrap().abilities;
+        assert!(
+            abilities.iter().any(|a| a == &elf_ability),
+            "Thranduil must gain the activated ability of the Elf card in its \
+             controller's graveyard; got {abilities:?}"
+        );
+        assert!(
+            !abilities.iter().any(|a| a == &bear_ability),
+            "a non-Elf graveyard card must not donate (subtype axis)"
+        );
+        assert!(
+            !abilities.iter().any(|a| a == &opp_elf_ability),
+            "an Elf card in the opponent's graveyard must not donate (CR 108.3 owner axis)"
+        );
+        assert!(
+            !abilities.iter().any(|a| a == &live_elf_ability),
+            "an Elf on the battlefield must not donate (graveyard zone axis)"
+        );
+    }
+
     /// CR 109.5 + CR 604.1: `expand_granted_activated_abilities` memoizes the
     /// matching-provider set per recipient controller. With K recipients sharing
     /// ONE controller, the provider filter sweep runs exactly once (M scans, one
