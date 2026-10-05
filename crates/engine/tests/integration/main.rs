@@ -1552,6 +1552,7 @@ mod cryptex_collect_evidence_mana_ability;
 mod cumulative_upkeep_discard;
 mod damage_done_once_by_controller_player_recipients;
 mod damage_prevention_formula;
+mod damage_redirect_target_constraints;
 mod dazzling_beauty_become_blocked;
 mod detectives_phoenix_bestow_graveyard;
 mod dreadhorde_invasion_amass;
