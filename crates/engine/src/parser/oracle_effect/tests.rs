@@ -26032,25 +26032,40 @@ fn inline_delayed_tracked_subject_controller_qualifies_each_zone_event() {
 }
 
 #[test]
+fn inline_delayed_self_subject_control_keeps_bare_self_ref() {
+    let effect = parse_effect("When it dies under your control this turn, draw two cards");
+    assert!(
+        matches!(
+            effect,
+            Effect::CreateDelayedTrigger {
+                condition: DelayedTriggerCondition::WhenDies {
+                    filter: TargetFilter::SelfRef,
+                },
+                uses_tracked_set: false,
+                ..
+            }
+        ),
+        "expected a bare SelfRef death condition, got {effect:?}"
+    );
+}
+
+#[test]
 fn inline_delayed_owner_and_another_subjects_do_not_acquire_you_controller() {
     let owner =
         parse_effect("When an exiled card enters under its owner's control this way, draw a card");
-    if let Effect::CreateDelayedTrigger {
+    let Effect::CreateDelayedTrigger {
         condition: DelayedTriggerCondition::WhenEntersBattlefield { filter },
+        uses_tracked_set: true,
         ..
     } = owner
-    {
-        assert_ne!(
-            filter,
-            TargetFilter::And {
-                filters: vec![
-                    TargetFilter::ParentTarget,
-                    TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You)),
-                ],
-            },
-            "owner control must not be misread as the delayed creator's control"
-        );
-    }
+    else {
+        panic!("expected tracked owner-control entry condition, got {owner:?}");
+    };
+    assert_eq!(
+        filter,
+        TargetFilter::ParentTarget,
+        "owner control must not be misread as the delayed creator's control"
+    );
 
     let another = parse_effect("When another creature you control dies, draw a card");
     assert!(matches!(another, Effect::Unimplemented { .. }));
