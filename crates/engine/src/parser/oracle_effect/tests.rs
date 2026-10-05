@@ -26107,7 +26107,7 @@ fn lagrella_full_oracle_keeps_exile_tracking_entry_controller_and_counter_payloa
         Effect::PutCounter {
             counter_type: crate::types::counter::CounterType::Plus1Plus1,
             count: QuantityExpr::Fixed { value: 2 },
-            target: TargetFilter::TriggeringSource,
+            target: TargetFilter::ParentTarget,
             ..
         }
     ));
