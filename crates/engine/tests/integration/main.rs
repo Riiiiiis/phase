@@ -1035,6 +1035,7 @@ mod land_equilibrium_forced_sacrifice;
 mod landing_zone_this_way_quantity;
 mod lasting_cast_from_hand_permission;
 mod lasting_play_from_exile_permission;
+mod latched_redirect_controller;
 mod lathiel_end_step_counters_repro;
 mod leading_duration_distribution_7923;
 mod leeching_sliver;
