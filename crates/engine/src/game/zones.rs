@@ -820,7 +820,12 @@ pub(crate) fn record_resolution_source_relatch(
         .resolving_stack_entry
         .as_ref()
         .and_then(StackEntry::ability)
-        .map(|a| (a.source_id, a.trigger_source_incarnation()))
+        .map(|a| {
+            (
+                a.source_id,
+                a.trigger_source_incarnation().or(a.source_incarnation),
+            )
+        })
     else {
         return;
     };
@@ -2974,6 +2979,135 @@ mod tests {
 
     fn setup() -> GameState {
         GameState::new_two_player(42)
+    }
+
+    #[test]
+    fn resolution_source_relatch_uses_activated_source_stamp() {
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Graveyard,
+        );
+        let foreign = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Foreign".into(),
+            Zone::Graveyard,
+        );
+        let captured = state.objects[&source].incarnation;
+        let mut ability = crate::types::ability::ResolvedAbility::new(
+            crate::types::ability::Effect::NoOp,
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.source_incarnation = Some(captured);
+        state.resolving_stack_entry = Some(StackEntry {
+            id: ObjectId(900),
+            source_id: source,
+            controller: PlayerId(0),
+            kind: StackEntryKind::ActivatedAbility {
+                source_id: source,
+                ability: Box::new(ability.clone()),
+            },
+        });
+        record_resolution_source_relatch(&mut state, foreign, captured, captured + 1);
+        record_resolution_source_relatch(&mut state, source, captured + 99, captured + 100);
+        assert!(state.resolution_source_relatch.is_none());
+        move_to_zone(&mut state, source, Zone::Battlefield, &mut Vec::new());
+        let current = state.objects[&source].incarnation;
+        assert_eq!(
+            state.resolution_source_relatch,
+            Some(ResolutionSourceRelatch {
+                object_id: source,
+                original_stamp: captured,
+                current_incarnation: current
+            })
+        );
+        assert!(ability.source_is_current(&state));
+        state.resolution_source_relatch = None;
+        state.resolving_stack_entry = None;
+        record_resolution_source_relatch(&mut state, source, captured, current);
+        assert!(state.resolution_source_relatch.is_none());
+        assert!(!ability.source_is_current(&state));
+    }
+
+    #[test]
+    fn resolution_source_relatch_preserves_trigger_stamp_and_rejects_foreign_or_stale_moves() {
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Graveyard,
+        );
+        let foreign = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Foreign".into(),
+            Zone::Graveyard,
+        );
+        let captured = state.objects[&source].incarnation;
+        let mut ability = crate::types::ability::ResolvedAbility::new(
+            crate::types::ability::Effect::NoOp,
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.set_test_trigger_source_recursive(captured, CardId(1));
+        ability.source_incarnation = Some(captured + 50);
+        state.resolving_stack_entry = Some(StackEntry {
+            id: ObjectId(900),
+            source_id: source,
+            controller: PlayerId(0),
+            kind: StackEntryKind::ActivatedAbility {
+                source_id: source,
+                ability: Box::new(ability),
+            },
+        });
+        record_resolution_source_relatch(&mut state, source, captured + 50, captured + 51);
+        assert!(
+            state.resolution_source_relatch.is_none(),
+            "trigger authority must win over conflicting activated fallback"
+        );
+        move_to_zone(&mut state, source, Zone::Battlefield, &mut Vec::new());
+        let first = state
+            .resolution_source_relatch
+            .expect("trigger-stamped own move must latch");
+        assert_eq!(first.original_stamp, captured);
+        assert_eq!(
+            first.current_incarnation,
+            state.objects[&source].incarnation
+        );
+        move_to_zone(&mut state, source, Zone::Exile, &mut Vec::new());
+        let second = state
+            .resolution_source_relatch
+            .expect("chained own move must advance");
+        assert_eq!(second.original_stamp, captured);
+        assert_eq!(
+            second.current_incarnation,
+            state.objects[&source].incarnation
+        );
+        assert_ne!(second.current_incarnation, first.current_incarnation);
+        record_resolution_source_relatch(
+            &mut state,
+            foreign,
+            second.current_incarnation,
+            second.current_incarnation + 1,
+        );
+        record_resolution_source_relatch(
+            &mut state,
+            source,
+            first.current_incarnation,
+            second.current_incarnation + 1,
+        );
+        assert_eq!(state.resolution_source_relatch, Some(second));
     }
 
     #[test]

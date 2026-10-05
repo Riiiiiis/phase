@@ -6950,7 +6950,7 @@ mod tests {
             QuantityRef::ObjectCount {
                 filter: TargetFilter::Typed(typed),
             } => {
-                assert_eq!(typed.controller, Some(ControllerRef::TargetPlayer));
+                assert_eq!(typed.controller, Some(ControllerRef::TargetOpponent));
                 assert!(
                     typed
                         .type_filters
