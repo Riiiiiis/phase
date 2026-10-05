@@ -9201,7 +9201,7 @@ mod tests {
             assert!(!filters.is_empty());
             for leaf in filters {
                 assert!(
-                    matches!(leaf, TargetFilter::Typed(typed) if typed.controller == Some(expected))
+                    matches!(leaf, TargetFilter::Typed(typed) if typed.controller.as_ref() == Some(&expected))
                 );
             }
         }
