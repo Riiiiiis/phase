@@ -39,7 +39,8 @@ pub fn resolve(
     // PLACEMENT IS LOAD-BEARING — DO NOT SINK THIS CALL. Three binders below
     // rewrite the exact filter shapes this predicate keys on:
     //   * `bind_tracked_set_to_condition`      — ParentTarget | Any | TrackedSet(0)
-    //                                            -> TrackedSet { real_id }
+    //                                            -> TrackedSet { real_id }, including
+    //                                            ParentTarget nested in And/Or/Not
     //   * `bind_parent_slots_from_root`          — ParentTargetSlot -> SpecificObject
     //                                            / SpecificPlayer (chain-root slot)
     //   * `bind_contextual_filter_to_condition` — ParentTarget -> SpecificObject
@@ -1328,15 +1329,28 @@ fn bind_tracked_set_to_condition(condition: &mut DelayedTriggerCondition, real_i
         _ => return,
     };
 
-    if matches!(
-        filter,
-        TargetFilter::ParentTarget
-            | TargetFilter::Any
-            | TargetFilter::TrackedSet {
-                id: TrackedSetId(0)
-            }
-    ) {
+    if matches!(filter, TargetFilter::Any) {
         *filter = TargetFilter::TrackedSet { id: real_id };
+    } else {
+        bind_tracked_set_subject_filter(filter, real_id);
+    }
+}
+
+/// CR 603.7c + CR 608.2c: Bind the tracked referent at delayed creation
+/// without discarding independent subject predicates, including controller.
+fn bind_tracked_set_subject_filter(filter: &mut TargetFilter, real_id: TrackedSetId) {
+    match filter {
+        TargetFilter::ParentTarget
+        | TargetFilter::TrackedSet {
+            id: TrackedSetId(0),
+        } => *filter = TargetFilter::TrackedSet { id: real_id },
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            for child in filters {
+                bind_tracked_set_subject_filter(child, real_id);
+            }
+        }
+        TargetFilter::Not { filter } => bind_tracked_set_subject_filter(filter, real_id),
+        _ => {}
     }
 }
 
