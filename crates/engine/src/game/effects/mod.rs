@@ -27061,6 +27061,7 @@ mod tests {
     fn empty_forwarded_generic_grant_keeps_later_source_self_ref() {
         for delivers in [true, false] {
             let (mut state, source, returned, _) = forwarded_test_objects();
+            let returned_incarnation = state.objects[&returned].incarnation;
             let mut later = forwarded_test_grant(source, Keyword::Flying);
             later.optional = true;
             later.sub_link = SubAbilityLink::SequentialSibling;
@@ -27085,8 +27086,62 @@ mod tests {
                 },
                 immediate,
             );
+            if let Effect::ChangeZone { target, .. } = &mut producer.effect {
+                *target = TargetFilter::Typed(TypedFilter::creature());
+            }
+            producer.optional_targeting = true;
             producer.set_source_incarnation_recursive(Some(state.objects[&source].incarnation));
-            resolve_ability_chain(&mut state, &producer, &mut Vec::new(), 0).unwrap();
+            let mut events = Vec::new();
+            resolve_ability_chain(&mut state, &producer, &mut events, 0).unwrap();
+            if delivers {
+                assert_outer_forwarded_result(&events, returned);
+                assert_eq!(state.objects[&returned].zone, Zone::Battlefield);
+                assert!(state.objects[&returned].incarnation > returned_incarnation);
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    GameEvent::ZoneChanged {
+                        object_id,
+                        from: Some(Zone::Graveyard),
+                        to: Zone::Battlefield,
+                        ..
+                    } if *object_id == returned
+                )));
+            } else {
+                assert_eq!(state.objects[&returned].zone, Zone::Graveyard);
+                assert_eq!(state.objects[&returned].incarnation, returned_incarnation);
+                assert!(!events
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::LifeChanged { .. })));
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        GameEvent::ZoneChanged { object_id, .. } if *object_id == returned
+                    ))
+                    .count(),
+                usize::from(delivers)
+            );
+            assert_eq!(
+                state
+                    .active_optional_effect_frame()
+                    .unwrap()
+                    .ability
+                    .context
+                    .forwarded_result_context
+                    .as_ref()
+                    .unwrap()
+                    .object_incarnations,
+                if delivers {
+                    vec![ObjectIncarnationRef::of(
+                        returned,
+                        state.objects[&returned].incarnation,
+                    )]
+                } else {
+                    vec![]
+                }
+            );
             assert_eq!(
                 has_forwarded_test_grant(&state, returned, Keyword::Haste),
                 delivers
@@ -27115,6 +27170,34 @@ mod tests {
     fn forwarded_generic_self_ref_uses_first_result_slot_without_rewriting_provenance() {
         for same_id in [false, true] {
             let (mut state, original_source, returned, other) = forwarded_test_objects();
+            let returned_incarnation = state.objects[&returned].incarnation;
+            let other_incarnation = state.objects[&other].incarnation;
+            let mut events = Vec::new();
+            crate::game::zones::move_to_zone(&mut state, returned, Zone::Battlefield, &mut events);
+            crate::game::zones::move_to_zone(&mut state, other, Zone::Battlefield, &mut events);
+            assert_eq!(state.objects[&returned].zone, Zone::Battlefield);
+            assert_eq!(state.objects[&other].zone, Zone::Battlefield);
+            assert!(state.objects[&returned].incarnation > returned_incarnation);
+            assert!(state.objects[&other].incarnation > other_incarnation);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter_map(|event| match event {
+                        GameEvent::ZoneChanged {
+                            object_id,
+                            from,
+                            to,
+                            ..
+                        } if *object_id == returned || *object_id == other =>
+                            Some((*object_id, *from, *to)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                vec![
+                    (returned, Some(Zone::Graveyard), Zone::Battlefield),
+                    (other, Some(Zone::Graveyard), Zone::Battlefield)
+                ]
+            );
             let source = if same_id { returned } else { original_source };
             let mut grant = forwarded_test_grant(source, Keyword::Haste);
             grant.set_test_trigger_source_recursive(900, CardId(100));
@@ -27157,6 +27240,34 @@ mod tests {
     fn forwarded_generic_self_ref_rejects_stale_or_empty_result() {
         for result_kind in 0..3 {
             let (mut state, source, returned, other) = forwarded_test_objects();
+            let returned_incarnation = state.objects[&returned].incarnation;
+            let other_incarnation = state.objects[&other].incarnation;
+            let mut events = Vec::new();
+            crate::game::zones::move_to_zone(&mut state, returned, Zone::Battlefield, &mut events);
+            crate::game::zones::move_to_zone(&mut state, other, Zone::Battlefield, &mut events);
+            assert_eq!(state.objects[&returned].zone, Zone::Battlefield);
+            assert_eq!(state.objects[&other].zone, Zone::Battlefield);
+            assert!(state.objects[&returned].incarnation > returned_incarnation);
+            assert!(state.objects[&other].incarnation > other_incarnation);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter_map(|event| match event {
+                        GameEvent::ZoneChanged {
+                            object_id,
+                            from,
+                            to,
+                            ..
+                        } if *object_id == returned || *object_id == other =>
+                            Some((*object_id, *from, *to)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                vec![
+                    (returned, Some(Zone::Graveyard), Zone::Battlefield),
+                    (other, Some(Zone::Graveyard), Zone::Battlefield)
+                ]
+            );
             let mut grant = forwarded_test_grant(source, Keyword::Haste);
             if let Effect::GenericEffect {
                 static_abilities,
@@ -27286,10 +27397,12 @@ mod tests {
         }
         for nested_delivers in [true, false] {
             let (mut state, source, returned, other) = forwarded_test_objects();
+            let returned_incarnation = state.objects[&returned].incarnation;
+            let other_incarnation = state.objects[&other].incarnation;
             let mut later = forwarded_test_grant(source, Keyword::Flying);
             later.optional = true;
             later.sub_link = SubAbilityLink::SequentialSibling;
-            let nested = forwarding_zone_change(
+            let mut nested = forwarding_zone_change(
                 source,
                 other,
                 if nested_delivers {
@@ -27299,6 +27412,10 @@ mod tests {
                 },
                 forwarded_test_grant(source, Keyword::Trample).sub_ability(later),
             );
+            if let Effect::ChangeZone { target, .. } = &mut nested.effect {
+                *target = TargetFilter::Typed(TypedFilter::creature());
+            }
+            nested.optional_targeting = true;
             let mut producer = forwarding_zone_change(
                 source,
                 returned,
@@ -27309,6 +27426,63 @@ mod tests {
             let mut events = Vec::new();
             resolve_ability_chain(&mut state, &producer, &mut events, 0).unwrap();
             assert_outer_forwarded_result(&events, returned);
+            assert_eq!(state.objects[&returned].zone, Zone::Battlefield);
+            assert!(state.objects[&returned].incarnation > returned_incarnation);
+            assert!(events.iter().any(|event| matches!(
+                event,
+                GameEvent::ZoneChanged {
+                    object_id,
+                    from: Some(Zone::Graveyard),
+                    to: Zone::Battlefield,
+                    ..
+                } if *object_id == returned
+            )));
+            if nested_delivers {
+                assert_outer_forwarded_result(&events, other);
+                assert_eq!(state.objects[&other].zone, Zone::Battlefield);
+                assert!(state.objects[&other].incarnation > other_incarnation);
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    GameEvent::ZoneChanged {
+                        object_id,
+                        from: Some(Zone::Graveyard),
+                        to: Zone::Battlefield,
+                        ..
+                    } if *object_id == other
+                )));
+            } else {
+                assert_eq!(state.objects[&other].zone, Zone::Graveyard);
+                assert_eq!(state.objects[&other].incarnation, other_incarnation);
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        GameEvent::ZoneChanged { object_id, .. } if *object_id == other
+                    ))
+                    .count(),
+                usize::from(nested_delivers)
+            );
+            assert_eq!(
+                state
+                    .active_optional_effect_frame()
+                    .unwrap()
+                    .ability
+                    .context
+                    .forwarded_result_context
+                    .as_ref()
+                    .unwrap()
+                    .object_incarnations,
+                if nested_delivers {
+                    vec![ObjectIncarnationRef::of(
+                        other,
+                        state.objects[&other].incarnation,
+                    )]
+                } else {
+                    vec![]
+                }
+            );
             assert!(has_forwarded_test_grant(&state, returned, Keyword::Haste));
             assert_eq!(
                 has_forwarded_test_grant(&state, other, Keyword::Trample),
@@ -27473,10 +27647,30 @@ mod tests {
         for optional_producer in [false, true] {
             for replace_with_exile in [false, true] {
                 let (mut state, source, returned, _) = forwarded_test_objects();
+                let returned_incarnation = state.objects[&returned].incarnation;
+                let source_stamp = Some(state.objects[&source].incarnation);
                 let replacement = ReplacementDefinition::new(ReplacementEvent::Moved)
                     .mode(crate::types::ability::ReplacementMode::Optional { decline: None })
                     .valid_card(TargetFilter::SelfRef)
-                    .destination_zone(Zone::Exile);
+                    .destination_zone(Zone::Battlefield)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::ChangeZone {
+                            origin: None,
+                            destination: Zone::Exile,
+                            target: TargetFilter::SelfRef,
+                            owner_library: false,
+                            enter_transformed: false,
+                            enters_under: None,
+                            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                            enters_attacking: false,
+                            up_to: false,
+                            enter_with_counters: Vec::new(),
+                            conditional_enter_with_counters: vec![],
+                            face_down_profile: None,
+                            enters_modified_if: None,
+                        },
+                    ));
                 state
                     .objects
                     .get_mut(&returned)
@@ -27493,42 +27687,182 @@ mod tests {
                     forwarded_test_grant(source, Keyword::Haste).sub_ability(later),
                 );
                 producer.optional = optional_producer;
-                producer.set_source_incarnation_recursive(Some(state.objects[&source].incarnation));
-                resolve_ability_chain(&mut state, &producer, &mut Vec::new(), 0).unwrap();
+                producer.set_source_incarnation_recursive(source_stamp);
+                let mut events = Vec::new();
+                resolve_ability_chain(&mut state, &producer, &mut events, 0).unwrap();
                 if optional_producer {
                     assert!(state.active_optional_effect_frame().is_some());
-                    crate::game::engine::apply_as_current(
+                    let action_result = crate::game::engine::apply_as_current(
                         &mut state,
                         GameAction::DecideOptionalEffect { accept: true },
                     )
                     .unwrap();
+                    events.extend(action_result.events);
                 }
                 assert!(matches!(
                     state.waiting_for,
                     WaitingFor::ReplacementChoice { .. }
                 ));
-                let chain = &state
-                    .active_ability_continuation()
-                    .expect("move must park its immediate child")
-                    .chain;
+                let WaitingFor::ReplacementChoice {
+                    player,
+                    candidate_count,
+                    candidates,
+                    kind,
+                    ..
+                } = &state.waiting_for
+                else {
+                    unreachable!()
+                };
+                assert_eq!(*player, PlayerId(0));
+                assert_eq!(
+                    *kind,
+                    crate::types::game_state::ReplacementChoiceKind::OptionalBranch
+                );
+                assert_eq!(*candidate_count, 2);
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates
+                    .iter()
+                    .all(|candidate| candidate.source_id == returned));
+                assert_eq!(candidates[0].description, "Accept");
+                assert_eq!(candidates[1].description, "Decline");
+                assert_eq!(state.objects[&returned].zone, Zone::Graveyard);
+                assert_eq!(state.objects[&returned].incarnation, returned_incarnation);
+                assert!(!has_forwarded_test_grant(&state, returned, Keyword::Haste));
+                assert!(!events.iter().any(|event| matches!(
+                    event,
+                    GameEvent::ZoneChanged { object_id, .. } if *object_id == returned
+                )));
+                let frames = state.resolution_stack.iter().collect::<Vec<_>>();
+                let [ResolutionFrame::AbilityContinuation(continuation), ResolutionFrame::ChangeZone(zone)] =
+                    frames.as_slice()
+                else {
+                    panic!("move must park its immediate child below ChangeZone, got {frames:?}")
+                };
+                let chain = &continuation.pending.chain;
+                assert_eq!(chain.source_id, source);
+                assert_eq!(chain.source_incarnation, source_stamp);
+                assert!(chain.source_is_current(&state));
                 assert!(chain.context.pending_forwarded_zone_result.is_some());
+                let marker = chain
+                    .context
+                    .pending_forwarded_zone_result
+                    .as_ref()
+                    .unwrap();
+                let pending = zone
+                    .pending
+                    .as_ref()
+                    .expect("active zone operation must be pending");
+                assert_eq!(pending.source_id, source);
+                assert_eq!(marker.producer, source);
+                assert_eq!(
+                    marker.group,
+                    Some(pending.logical_zone_change_group.logical_group_id)
+                );
+                assert!(marker.selected.is_none());
+                let paused = pending
+                    .paused_current
+                    .as_ref()
+                    .expect("returned object must be paused");
+                assert_eq!(
+                    paused.member,
+                    ObjectIncarnationRef::of(returned, returned_incarnation)
+                );
+                assert!(matches!(
+                    &paused.expected_event,
+                    crate::types::proposed_event::ProposedEvent::ZoneChange {
+                        object_id,
+                        from: Zone::Graveyard,
+                        to: Zone::Battlefield,
+                        cause: Some(cause),
+                        ..
+                    } if *object_id == returned && *cause == source
+                ));
+                assert!(paused.terminal_completion.is_none());
+                assert!(chain.context.forwarded_result_context.is_none());
                 let Effect::GenericEffect {
-                    static_abilities, ..
+                    target,
+                    static_abilities,
+                    ..
                 } = &chain.effect
                 else {
                     unreachable!()
                 };
+                assert_eq!(target, &Some(TargetFilter::SelfRef));
                 assert_eq!(
                     static_abilities[0].affected,
                     Some(TargetFilter::ParentTargetSlot { index: 0 })
                 );
-                crate::game::engine::apply_as_current(
+                let later = chain
+                    .sub_ability
+                    .as_ref()
+                    .expect("later source instruction remains");
+                assert_eq!(later.sub_link, SubAbilityLink::SequentialSibling);
+                assert_eq!(later.source_id, source);
+                assert_eq!(later.source_incarnation, source_stamp);
+                assert!(later.source_is_current(&state));
+                let Effect::GenericEffect {
+                    target,
+                    static_abilities,
+                    ..
+                } = &later.effect
+                else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    effect::generic_effect_application_filter(
+                        target.as_ref(),
+                        static_abilities[0].affected.as_ref()
+                    ),
+                    Some(&TargetFilter::SelfRef)
+                );
+                let action_result = crate::game::engine::apply_as_current(
                     &mut state,
                     GameAction::ChooseReplacement {
                         index: if replace_with_exile { 0 } else { 1 },
                     },
                 )
                 .unwrap();
+                let destination = if replace_with_exile {
+                    Zone::Exile
+                } else {
+                    Zone::Battlefield
+                };
+                assert_eq!(
+                    action_result
+                        .events
+                        .iter()
+                        .filter_map(|event| match event {
+                            GameEvent::ZoneChanged {
+                                object_id,
+                                from,
+                                to,
+                                ..
+                            } if *object_id == returned => Some((*from, *to)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    vec![(Some(Zone::Graveyard), destination)]
+                );
+                assert!(state.objects[&returned].incarnation > returned_incarnation);
+                assert_eq!(
+                    state
+                        .active_optional_effect_frame()
+                        .unwrap()
+                        .ability
+                        .context
+                        .forwarded_result_context
+                        .as_ref()
+                        .unwrap()
+                        .object_incarnations,
+                    if replace_with_exile {
+                        vec![]
+                    } else {
+                        vec![ObjectIncarnationRef::of(
+                            returned,
+                            state.objects[&returned].incarnation,
+                        )]
+                    }
+                );
                 assert_eq!(
                     state.objects[&returned].zone,
                     if replace_with_exile {
@@ -27570,7 +27904,7 @@ mod tests {
                 object_id: other,
                 player_id: PlayerId(0),
             });
-            let filters = vec![
+            let filters = [
                 TargetFilter::SelfRef,
                 TargetFilter::And {
                     filters: vec![TargetFilter::And {
