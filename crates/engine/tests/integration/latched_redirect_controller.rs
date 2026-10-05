@@ -535,6 +535,9 @@ fn vassals_duty_latches_activator_and_spends_exactly_one_damage() {
     let duty = scenario
         .add_enchantment_from_oracle(P0, "Vassal's Duty", VASSALS_DUTY)
         .id();
+    scenario
+        .add_creature(P0, "Alternate legend", 0, 9)
+        .as_legendary();
     let protected = scenario
         .add_creature(P0, "Protected legend", 0, 9)
         .as_legendary()
