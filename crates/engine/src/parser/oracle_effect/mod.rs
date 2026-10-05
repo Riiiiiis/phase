@@ -4264,20 +4264,21 @@ fn parse_delayed_subject_filter(condition_text: &str, ctx: &mut ParseContext) ->
     // CR 109.5 + CR 603.7e: "your" names the delayed ability's controller,
     // fixed when its creating ability resolves. Keep that predicate alongside
     // the subject so the tracked-set binder can still bind the latter.
-    if nom_primitives::scan_at_word_boundaries(condition_text, |input| {
-        verify(parse_control_clause, |possessor| {
-            *possessor == ControlClausePossessor::You
-        })
-        .parse(input)
-    })
-    .is_some()
-        || nom_primitives::scan_at_word_boundaries(condition_text, |input| {
-            verify(nom_filter::parse_zone_controller, |controller| {
-                *controller == ControllerRef::You
+    if matches!(subject, TargetFilter::ParentTarget)
+        && (nom_primitives::scan_at_word_boundaries(condition_text, |input| {
+            verify(parse_control_clause, |possessor| {
+                *possessor == ControlClausePossessor::You
             })
             .parse(input)
         })
         .is_some()
+            || nom_primitives::scan_at_word_boundaries(condition_text, |input| {
+                verify(nom_filter::parse_zone_controller, |controller| {
+                    *controller == ControllerRef::You
+                })
+                .parse(input)
+            })
+            .is_some())
     {
         TargetFilter::And {
             filters: vec![
