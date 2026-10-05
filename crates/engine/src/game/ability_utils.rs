@@ -2,12 +2,13 @@
 use crate::types::ability::TapStateChange;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, AttachSelection,
-    CardTypeSetSource, CastManaSpentMetric, CombatRelationSubject, ControllerRef, CountBinding,
-    CounterMoveSelection, DamageSource, EachDamageRecipient, Effect, EffectKind, EffectScope,
-    FilterProp, GameRestriction, ModalChoice, ModalSelectionCondition, ModalSelectionConstraint,
-    MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
-    ResolvedAbility, RestrictionPlayerScope, SpellContext, SubAbilityLink, TargetChoiceTiming,
-    TargetFilter, TargetReadOrigin, TargetRef, TriggerDefinition, TypeFilter, TypedFilter,
+    CardTypeSetSource, CastManaSpentMetric, CombatRelationSubject, ContinuousModification,
+    ControllerRef, CountBinding, CounterMoveSelection, DamageSource, EachDamageRecipient, Effect,
+    EffectKind, EffectScope, FilterProp, GameRestriction, ModalChoice, ModalSelectionCondition,
+    ModalSelectionConstraint, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, PtValue,
+    QuantityExpr, QuantityRef, ResolvedAbility, RestrictionPlayerScope, SpellContext,
+    SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetReadOrigin, TargetRef,
+    TriggerDefinition, TypeFilter, TypedFilter,
 };
 // CR 601.2c: mana recipient / count-source role slot gate.
 use crate::types::ability::mana_multi_role;
@@ -23,7 +24,7 @@ use crate::types::zones::Zone;
 
 use super::engine::EngineError;
 use super::players;
-use super::quantity::resolve_quantity_with_targets;
+use super::quantity::{quantity_expr_uses_recipient, resolve_quantity_with_targets};
 use super::stack::stack_object_controller;
 use super::targeting;
 use super::triggers;
@@ -2524,7 +2525,72 @@ fn validate_pinned_targets_for_slot(
         .collect()
 }
 
+/// CR 608.2b: recheck an actually announced, sole derived role using the same
+/// authority as announcement. Mixed principal/derived layouts retain their own
+/// paths; pruning those positional lists here could silently exchange roles.
+fn validate_single_derived_role(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    target_origin: TargetReadOrigin,
+) -> Option<Vec<TargetRef>> {
+    match target_origin {
+        TargetReadOrigin::ParentAnnouncement => return None,
+        TargetReadOrigin::OwnAnnouncement => {}
+    }
+    if ability.target_choice_timing != TargetChoiceTiming::Stack
+        || ability.target_reads == TargetReadOrigin::ParentAnnouncement
+        || effect_player_filter_is_parent_target_anaphor(&ability.effect)
+        || paid_instead_delegate(ability).is_some()
+        || ability.multi_target.is_some()
+        || triggers::extract_target_filter_from_effect(&ability.effect).is_some()
+        || effect_needs_parent_target_combat_relation_slot(&ability.effect)
+        || become_copy_recipient_slot_filter(&ability.effect).is_some()
+    {
+        return None;
+    }
+    let companion = ability_needs_companion_target_player_slot(ability);
+    let quantity = effect_needs_target_creature_quantity_slot(&ability.effect)
+        && !one_sided_fight_source_supplies_quantity_creature(&ability.effect);
+    match (companion, quantity) {
+        (true, false) => {
+            let legal = companion_target_player_legal_targets(state, ability);
+            Some(
+                ability
+                    .targets
+                    .iter()
+                    .filter(|target| {
+                        legal.contains(target) && target_is_current(ability, target, state)
+                    })
+                    .cloned()
+                    .collect(),
+            )
+        }
+        (false, true) => effect_target_slot_filter(&ability.effect).map(|derived| {
+            validate_pinned_targets(state, &ability.targets, &derived.filter, ability)
+        }),
+        (false, false) | (true, true) => None,
+    }
+}
+
 pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -> ResolvedAbility {
+    validate_targets_in_chain_inner(state, ability, TargetReadOrigin::OwnAnnouncement)
+}
+
+fn validate_targets_in_chain_inner(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    target_origin: TargetReadOrigin,
+) -> ResolvedAbility {
+    // Classify provenance before pruning the parent's declaration.
+    let sub_origin = if ability
+        .sub_ability
+        .as_deref()
+        .is_some_and(|sub| rider_entries_are_inherited(ability, sub))
+    {
+        TargetReadOrigin::ParentAnnouncement
+    } else {
+        TargetReadOrigin::OwnAnnouncement
+    };
     let mut validated = ability.clone();
     validated.targets = if is_per_opponent_target_fanout(&validated) {
         validate_per_opponent_target_fanout_targets(state, &validated)
@@ -2924,6 +2990,8 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
         // exceptional declared target against the same legal-player set used
         // to build the slot.
         validate_pinned_targets(state, &validated.targets, &TargetFilter::Player, &validated)
+    } else if let Some(targets) = validate_single_derived_role(state, &validated, target_origin) {
+        targets
     } else {
         match triggers::extract_target_filter_from_effect(&validated.effect) {
             Some(filter) if matches!(validated.effect, Effect::PairWith { .. }) => {
@@ -3041,7 +3109,7 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
         }
     };
     if let Some(sub_ability) = validated.sub_ability.as_mut() {
-        **sub_ability = validate_targets_in_chain(state, sub_ability);
+        **sub_ability = validate_targets_in_chain_inner(state, sub_ability, sub_origin);
     }
     // CR 608.2b: an inheriting rider's entry is a snapshot of its immediate
     // parent's object target, not a target it specified, so the context-ref keep
@@ -3051,7 +3119,8 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
     // determine any information instead of reading a stale object.
     restamp_inherited_rider_target(&mut validated);
     if let Some(else_ability) = validated.else_ability.as_mut() {
-        **else_ability = validate_targets_in_chain(state, else_ability);
+        **else_ability =
+            validate_targets_in_chain_inner(state, else_ability, TargetReadOrigin::OwnAnnouncement);
     }
     restamp_chosen_group_targets(&mut validated);
     validated
@@ -5070,6 +5139,15 @@ fn effect_bound_filter_matches(effect: &Effect, pred: fn(&TargetFilter) -> bool)
             return true;
         }
     }
+    if let Effect::CopyTokenOf {
+        source_filter: Some(filter),
+        ..
+    } = effect
+    {
+        if pred(filter) {
+            return true;
+        }
+    }
     if effect.target_filter().is_some_and(pred) {
         return true;
     }
@@ -6040,12 +6118,90 @@ fn target_filter_can_supply_creature_quantity(filter: &TargetFilter) -> bool {
 /// returning the FIRST `Some`. `Some(filter)` means the effect's magnitude/scope
 /// references a value that requires its own surfaced target slot whose legal
 /// candidates are `filter`; `None` means no count-derived slot is needed.
+/// CR 608.2h + CR 611.2d: only the immediate P/T values snapshotted by
+/// `effect::snapshot_transient_modifications` consume targets on this resolution.
+/// Granted abilities/triggers/statics are later contexts; recipient-live and CDA
+/// quantities are not announcement-time target declarations here.
+fn immediate_modification_target_slot_filter(
+    modification: &ContinuousModification,
+) -> Option<QuantitySlotDerivation> {
+    match modification {
+        ContinuousModification::AddDynamicPower { value }
+        | ContinuousModification::AddDynamicToughness { value }
+        | ContinuousModification::SetPowerDynamic { value }
+        | ContinuousModification::SetToughnessDynamic { value } => {
+            if quantity_expr_uses_recipient(value) {
+                None
+            } else {
+                quantity_expr_target_slot_filter(value)
+            }
+        }
+        ContinuousModification::CopyValues { .. }
+        | ContinuousModification::CopyChosen
+        | ContinuousModification::SetName { .. }
+        | ContinuousModification::SetTextName { .. }
+        | ContinuousModification::AddPower { .. }
+        | ContinuousModification::AddToughness { .. }
+        | ContinuousModification::SetPower { .. }
+        | ContinuousModification::SetToughness { .. }
+        | ContinuousModification::AddKeyword { .. }
+        | ContinuousModification::RemoveKeyword { .. }
+        | ContinuousModification::GrantAbility { .. }
+        | ContinuousModification::GrantAllActivatedAbilitiesOf { .. }
+        | ContinuousModification::GrantAllTriggeredAbilitiesOf { .. }
+        | ContinuousModification::GrantTrigger { .. }
+        | ContinuousModification::GrantReplacement { .. }
+        | ContinuousModification::RemoveAllAbilities
+        | ContinuousModification::AddType { .. }
+        | ContinuousModification::RemoveType { .. }
+        | ContinuousModification::AddSubtype { .. }
+        | ContinuousModification::RemoveSubtype { .. }
+        | ContinuousModification::SetCardTypes { .. }
+        | ContinuousModification::RemoveAllSubtypes { .. }
+        | ContinuousModification::SetDynamicPower { .. }
+        | ContinuousModification::SetDynamicToughness { .. }
+        | ContinuousModification::AddDynamicKeyword { .. }
+        | ContinuousModification::AddKeywordWithDerivedCost { .. }
+        | ContinuousModification::AddAllCreatureTypes
+        | ContinuousModification::AddAllBasicLandTypes
+        | ContinuousModification::AddAllLandTypes
+        | ContinuousModification::AddChosenSubtype { .. }
+        | ContinuousModification::AddChosenColor { .. }
+        | ContinuousModification::RemoveChosenKeyword
+        | ContinuousModification::AddChosenKeyword
+        | ContinuousModification::SetColor { .. }
+        | ContinuousModification::AddColor { .. }
+        | ContinuousModification::AddStaticMode { .. }
+        | ContinuousModification::GrantStaticAbility { .. }
+        | ContinuousModification::SwitchPowerToughness
+        | ContinuousModification::AssignDamageFromToughness
+        | ContinuousModification::AssignDamageAsThoughUnblocked
+        | ContinuousModification::AssignNoCombatDamage
+        | ContinuousModification::ChangeController
+        | ContinuousModification::SetBasicLandType { .. }
+        | ContinuousModification::SetChosenBasicLandType
+        | ContinuousModification::SetChosenName
+        | ContinuousModification::RetainPrintedTriggerFromSource { .. }
+        | ContinuousModification::RetainPrintedAbilityFromSource { .. }
+        | ContinuousModification::RetainAllOtherAbilitiesFromSource
+        | ContinuousModification::AddSupertype { .. }
+        | ContinuousModification::RemoveSupertype { .. }
+        | ContinuousModification::AddCounterOnEnter { .. }
+        | ContinuousModification::SetStartingLoyalty { .. }
+        | ContinuousModification::RemoveManaCost => None,
+    }
+}
+
 fn effect_target_slot_filter(effect: &Effect) -> Option<QuantitySlotDerivation> {
     if let Some(filter) = effect.target_filter().and_then(filter_target_slot_filter) {
         return Some(filter);
     }
 
     match effect {
+        Effect::GenericEffect { static_abilities, .. } => static_abilities
+            .iter()
+            .flat_map(|definition| &definition.modifications)
+            .find_map(immediate_modification_target_slot_filter),
         Effect::GainLife { amount, .. }
         | Effect::Draw { count: amount, .. }
         | Effect::Mill { count: amount, .. }
@@ -6079,6 +6235,23 @@ fn effect_target_slot_filter(effect: &Effect) -> Option<QuantitySlotDerivation> 
         }
         | Effect::DoublePTAll { target, .. } => filter_target_slot_filter(target),
         _ => None,
+    }
+}
+
+/// CR 115.1 + CR 115.10a: a counted population can name its controller or
+/// owner as a target without targeting any member of that population.
+fn population_target_slot_filter(filter: &TargetFilter) -> Option<QuantitySlotDerivation> {
+    if filter_references_target_player(filter) {
+        Some(QuantitySlotDerivation {
+            filter: if filter_references_target_opponent(filter) {
+                TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
+            } else {
+                TargetFilter::Player
+            },
+            binding: None,
+        })
+    } else {
+        filter_target_slot_filter(filter)
     }
 }
 
@@ -6301,8 +6474,8 @@ fn quantity_ref_target_slot_spec(qty: &QuantityRef) -> Option<QuantitySlotDeriva
         QuantityRef::DamageDealtThisTurn { source, target, .. } => {
             filter_target_slot_filter(source).or_else(|| filter_target_slot_filter(target))
         }
-        // Count-over-filter refs: the slot is creature-typed when a nested filter
-        // references a target-creature quantity (preserves today's behavior).
+        // Count-over-filter refs can name a target player whose population is
+        // counted, or carry an embedded target-derived object property.
         QuantityRef::ObjectCount { filter }
         | QuantityRef::ObjectCountDistinct { filter, .. }
         | QuantityRef::ObjectCountBySharedQuality { filter, .. }
@@ -6319,7 +6492,7 @@ fn quantity_ref_target_slot_spec(qty: &QuantityRef) -> Option<QuantitySlotDeriva
         | QuantityRef::ZoneChangeAggregateThisTurn { filter, .. }
         | QuantityRef::CounterAddedThisTurn { target: filter, .. }
         | QuantityRef::TokensCreatedThisTurn { filter, .. }
-        | QuantityRef::DistinctCounterKindsAmong { filter } => filter_target_slot_filter(filter),
+        | QuantityRef::DistinctCounterKindsAmong { filter } => population_target_slot_filter(filter),
         QuantityRef::SpellsCastThisTurn { filter, .. }
         | QuantityRef::SpellsCastBeforeTriggeringSpell { filter, .. }
         | QuantityRef::SpellsCastThisGame { filter, .. } => {
@@ -25146,5 +25319,60 @@ mod tests {
             assert_walk_accounting(outcome, &budget, work);
         }
         assert_eq!(exhausted, full_cost);
+    }
+    #[test]
+    fn immediate_pt_quantities_share_one_slot_and_skip_deferred_grants_shape() {
+        let mut scenario = crate::game::scenario::GameScenario::new();
+        let source = scenario.add_creature(PlayerId(0), "Source", 0, 3).id();
+        let selected = scenario.add_creature(PlayerId(1), "Magnitude", 5, 6).id();
+        let runner = scenario.build();
+        let value = QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::Target,
+            },
+        };
+        let effect = |mods| Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .modifications(mods)],
+            duration: Some(Duration::Permanent),
+            target: Some(TargetFilter::SelfRef),
+            end_cost: None,
+        };
+        let active = ResolvedAbility::new(
+            effect(vec![
+                ContinuousModification::AddKeyword {
+                    keyword: crate::types::keywords::Keyword::Haste,
+                },
+                ContinuousModification::SetPowerDynamic {
+                    value: value.clone(),
+                },
+                ContinuousModification::SetToughnessDynamic { value },
+            ]),
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        let slots = build_target_slots(runner.state(), &active).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert!(slots[0]
+            .legal_targets
+            .contains(&TargetRef::Object(selected)));
+        assert_eq!(target_slot_specs(runner.state(), &active).len(), 1);
+        let deferred = ResolvedAbility::new(
+            effect(vec![ContinuousModification::GrantAbility {
+                definition: Box::new(AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    active.effect.clone(),
+                )),
+            }]),
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        assert!(build_target_slots(runner.state(), &deferred)
+            .unwrap()
+            .is_empty());
+        assert!(target_slot_specs(runner.state(), &deferred).is_empty());
     }
 }
