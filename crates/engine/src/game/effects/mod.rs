@@ -27899,6 +27899,7 @@ mod tests {
     fn empty_forwarded_generic_pruning_preserves_composite_filter_contract() {
         for delivers in [true, false] {
             let (mut state, source, returned, other) = forwarded_test_objects();
+            let returned_incarnation = state.objects[&returned].incarnation;
             crate::game::zones::move_to_zone(&mut state, other, Zone::Battlefield, &mut Vec::new());
             state.current_trigger_event = Some(GameEvent::PermanentSacrificed {
                 object_id: other,
@@ -27992,12 +27993,63 @@ mod tests {
                 },
                 grant.sub_ability(later),
             );
+            if let Effect::ChangeZone { target, .. } = &mut producer.effect {
+                *target = TargetFilter::Typed(TypedFilter::creature());
+            }
+            producer.optional_targeting = true;
             producer.cost_paid_object = Some(CostPaidObjectSnapshot::capture(
                 &state.objects[&source],
                 state.objects[&source].snapshot_for_mana_spent(),
             ));
             producer.set_source_incarnation_recursive(Some(state.objects[&source].incarnation));
-            resolve_ability_chain(&mut state, &producer, &mut Vec::new(), 0).unwrap();
+            let mut events = Vec::new();
+            resolve_ability_chain(&mut state, &producer, &mut events, 0).unwrap();
+            if delivers {
+                assert_outer_forwarded_result(&events, returned);
+                assert_eq!(state.objects[&returned].zone, Zone::Battlefield);
+                assert!(state.objects[&returned].incarnation > returned_incarnation);
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    GameEvent::ZoneChanged {
+                        object_id,
+                        from: Some(Zone::Graveyard),
+                        to: Zone::Battlefield,
+                        ..
+                    } if *object_id == returned
+                )));
+            } else {
+                assert_eq!(state.objects[&returned].zone, Zone::Graveyard);
+                assert_eq!(state.objects[&returned].incarnation, returned_incarnation);
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        GameEvent::ZoneChanged { object_id, .. } if *object_id == returned
+                    ))
+                    .count(),
+                usize::from(delivers)
+            );
+            assert_eq!(
+                state
+                    .active_optional_effect_frame()
+                    .unwrap()
+                    .ability
+                    .context
+                    .forwarded_result_context
+                    .as_ref()
+                    .unwrap()
+                    .object_incarnations,
+                if delivers {
+                    vec![ObjectIncarnationRef::of(
+                        returned,
+                        state.objects[&returned].incarnation,
+                    )]
+                } else {
+                    vec![]
+                }
+            );
             assert_eq!(
                 has_forwarded_test_grant(&state, returned, Keyword::Haste),
                 delivers
