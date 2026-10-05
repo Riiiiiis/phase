@@ -188,12 +188,40 @@ fn choose_source(runner: &mut GameRunner, source: ObjectId, nondamaging: ObjectI
 }
 
 fn hellkite_damage(runner: &mut GameRunner, source: ObjectId, target: TargetRef) -> Vec<GameEvent> {
+    // The full Oracle includes a keyword line, so ability zero need not be the activation.
+    let ability_index = {
+        let mut damage_abilities = runner.state().objects[&source]
+            .abilities
+            .iter()
+            .enumerate()
+            .filter(|(_, ability)| {
+                ability.kind == AbilityKind::Activated
+                    && matches!(ability.effect.as_ref(), Effect::DealDamage { .. })
+            });
+        let (index, ability) = damage_abilities
+            .next()
+            .expect("the full Hellkite Oracle must expose an activated DealDamage ability");
+        assert!(
+            damage_abilities.next().is_none(),
+            "the printed damage activation must be unambiguous"
+        );
+        assert!(ability.sub_ability.is_none());
+        index
+    };
     priority(runner, P1);
     add_mana(runner, P1, ManaType::Red, 2);
+    let mana_before = mana(runner, P1);
     let outcome = match target {
-        TargetRef::Player(player) => runner.activate(source, 0).target_player(player).resolve(),
-        TargetRef::Object(object) => runner.activate(source, 0).target_object(object).resolve(),
+        TargetRef::Player(player) => runner
+            .activate(source, ability_index)
+            .target_player(player)
+            .resolve(),
+        TargetRef::Object(object) => runner
+            .activate(source, ability_index)
+            .target_object(object)
+            .resolve(),
     };
+    assert_eq!(mana(runner, P1), mana_before - 2, "printed {{1}}{{R}} paid");
     outcome.events().to_vec()
 }
 
@@ -292,6 +320,27 @@ fn change_target(board: &mut Board, spell: ObjectId) {
         Zone::Graveyard,
         "the actual response spell resolved before checking target legality"
     );
+}
+
+#[test]
+fn hellkite_full_oracle_activation_deals_unshielded_damage_from_the_selected_source() {
+    let mut b = board();
+    let source = b.sources[1];
+    let life = b.runner.life(P0);
+    assert!(b.runner.state().objects[&b.regalia]
+        .replacement_definitions
+        .is_empty());
+
+    // CR 120.2b + CR 120.3a: the real activated source deals damage and reduces life.
+    let events = hellkite_damage(&mut b.runner, source, TargetRef::Player(P0));
+    assert_damage(&events, source, TargetRef::Player(P0), 1);
+    assert_eq!(b.runner.life(P0), life - 1);
+
+    // CR 120.3e: the same source can instead mark damage on the chosen creature.
+    let events = hellkite_damage(&mut b.runner, source, TargetRef::Object(b.chosen));
+    assert_damage(&events, source, TargetRef::Object(b.chosen), 1);
+    assert_eq!(b.runner.state().objects[&b.chosen].damage_marked, 1);
+    assert_eq!(b.runner.life(P0), life - 1);
 }
 
 #[test]
@@ -583,10 +632,23 @@ fn soltari_guerrillas_redirects_its_combat_damage_to_an_unqualified_creature() {
     runner
         .declare_attackers(&[(source, AttackTarget::Player(P1))])
         .unwrap();
+    // CR 117.4 + CR 508.2: pass the post-attack priority window before blockers.
     if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
         runner.pass_both_players();
     }
-    runner.declare_blockers(&[]).unwrap();
+    assert_eq!(runner.state().phase, Phase::DeclareBlockers);
+    if matches!(
+        runner.state().waiting_for,
+        WaitingFor::DeclareBlockers { .. }
+    ) {
+        runner.declare_blockers(&[]).unwrap();
+    }
+    // CR 509.2 + CR 702.28b: shadow leaves no legal blockers here; the engine
+    // can already have made the empty declaration and returned priority to P0.
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { player: P0 }
+    ));
     let outcome = runner.combat_damage();
     // CR 614.9: the source's combat damage moves to the declared creature of either controller.
     assert_damage(outcome.events(), source, TargetRef::Object(recipient), 3);
