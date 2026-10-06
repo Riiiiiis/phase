@@ -6848,8 +6848,9 @@ fn active_continuous_effects_from_static_definitions(
             // below and `resolve_deferred_ability_grants` expands it when layer 6
             // starts, after the type-changing layer has settled.
             // CR 613.1f + CR 603.1: "~ has all triggered abilities of [source]"
-            // (Koh, the Face Stealer). Triggered-ability mirror of the activated
-            // expansion above: expand into one `GrantTrigger` per triggered ability
+            // (Koh, the Face Stealer). Triggered-ability mirror of
+            // `resolve_deferred_ability_grants`'s activated expansion, but still
+            // resolved here at gather time: expand into one `GrantTrigger` per triggered ability
             // of each object matching `source`, recomputed each pass and reusing the
             // existing `GrantTrigger` apply + dedup. No `cap` — triggered abilities
             // carry no activation use-restriction (CR 602.5b is activated-only). The
@@ -7156,7 +7157,11 @@ fn resolve_deferred_ability_grants(
     let mut resolved = Vec::with_capacity(layer_bucket.len());
     for effect in layer_bucket {
         match &effect.modification {
-            ContinuousModification::GrantAllActivatedAbilitiesOf { source, cap } => {
+            // Only static-sourced grants defer: a transient effect carrying this
+            // modification stays a no-op at apply, exactly as before.
+            ContinuousModification::GrantAllActivatedAbilitiesOf { source, cap }
+                if effect.transient_id.is_none() =>
+            {
                 resolved.extend(expand_granted_activated_abilities(
                     state,
                     effect.source_id,
@@ -9580,11 +9585,11 @@ fn apply_continuous_effect_filtered(
                     Arc::make_mut(&mut obj.abilities).push(granted);
                 }
             }
-            // CR 613.1f: Handled entirely at continuous-effect collection time —
-            // `active_continuous_effects_from_static_definitions` expands this into
-            // one `GrantAbility` effect per matching activated ability (it needs
-            // read access to the provider objects, which the per-object apply
-            // borrow cannot give). No direct per-object mutation here.
+            // CR 613.1f: Expanded at the start of layer 6 by
+            // `resolve_deferred_ability_grants` into one `GrantAbility` effect per
+            // matching activated ability (it needs read access to the provider
+            // objects, which the per-object apply borrow cannot give). No direct
+            // per-object mutation here.
             ContinuousModification::GrantAllActivatedAbilitiesOf { .. } => {}
             // CR 613.1f: Mirror of the activated case above — expanded into one
             // `GrantTrigger` per matching trigger at collection time
