@@ -3249,7 +3249,15 @@ pub fn evaluate_layers(state: &mut GameState) {
         }
 
         if !layer_bucket.is_empty() {
-            let layer_effects: Vec<&ActiveContinuousEffect> = layer_bucket.iter().collect();
+            // CR 613.1d + CR 613.1f: deferred provider grants resolve against the
+            // board left by layers 1-5, as layer 6 begins.
+            let resolved_bucket;
+            let layer_effects: Vec<&ActiveContinuousEffect> = if *layer == Layer::Ability {
+                resolved_bucket = resolve_deferred_ability_grants(state, layer_bucket);
+                resolved_bucket.iter().collect()
+            } else {
+                layer_bucket.iter().collect()
+            };
 
             let ordered = if layer.has_dependency_ordering() {
                 order_with_dependencies(&layer_effects, state)
@@ -4942,7 +4950,7 @@ struct LiveCharacteristicReads {
 /// | The Ring emblem (CR 701.54c) | `None` | nothing to see |
 /// | [`active_continuous_effects_from_static_definitions`] (printed statics) | `def.condition` | `e.condition` AND the source walk |
 /// | [`expand_granted_static_effects`] | `inner.condition` | `e.condition` ONLY |
-/// | `expand_granted_activated_abilities` | `None` | nothing to see |
+/// | `expand_granted_activated_abilities` (run by `resolve_deferred_ability_grants` at the start of layer 6, not at collection) | `None` | nothing to see |
 /// | `expand_granted_triggered_abilities` | `None` | nothing to see |
 /// | [`gather_transient_continuous_effects`] | recipient-context `tce.condition` only | `e.condition`, plus the transient walk for what it drops |
 /// | `stickers.rs` (two P/T sites) | `None` | nothing to see |
@@ -6229,7 +6237,15 @@ fn apply_layers_incremental(state: &mut GameState, prepared: PreparedIncremental
             continue;
         }
         if !layer_bucket.is_empty() {
-            let layer_effects: Vec<&ActiveContinuousEffect> = layer_bucket.iter().collect();
+            // CR 613.1d + CR 613.1f: mirror of the full pass — deferred provider
+            // grants resolve against the board left by layers 1-5.
+            let resolved_bucket;
+            let layer_effects: Vec<&ActiveContinuousEffect> = if *layer == Layer::Ability {
+                resolved_bucket = resolve_deferred_ability_grants(state, layer_bucket);
+                resolved_bucket.iter().collect()
+            } else {
+                layer_bucket.iter().collect()
+            };
             let ordered = if layer.has_dependency_ordering() {
                 order_with_dependencies(&layer_effects, state)
             } else {
@@ -6815,24 +6831,13 @@ fn active_continuous_effects_from_static_definitions(
                 // queries (e.g., parser/coverage walks).
             }
             // CR 613.1f + CR 113.3: "~ has all activated abilities of [source]"
-            // (Myr Welder, Territory Forge, …). Expand into one `GrantAbility` per
-            // activated ability of each object matching `source`, so the dynamic
-            // set is recomputed each pass and reuses the existing GrantAbility
-            // apply + dedup. The meta-effect itself has no standalone layer-6
-            // behaviour, so skip pushing it.
-            if let ContinuousModification::GrantAllActivatedAbilitiesOf { source, cap } =
-                modification
-            {
-                effects.extend(expand_granted_activated_abilities(
-                    state,
-                    source_id,
-                    timestamp,
-                    &affected_filter,
-                    source,
-                    cap.as_ref(),
-                ));
-                continue;
-            }
+            // (Myr Welder, Territory Forge, Thranduil, …) is NOT expanded here.
+            // Gather runs before layers 2-5, so a provider's membership in
+            // `source` read now would freeze the pre-type-change view (CR 613.1d
+            // applies before CR 613.1f; CR 611.3a: the effect applies to whatever
+            // its text indicates at any given moment). The meta-effect is pushed
+            // below and `resolve_deferred_ability_grants` expands it when layer 6
+            // starts, after the type-changing layer has settled.
             // CR 613.1f + CR 603.1: "~ has all triggered abilities of [source]"
             // (Koh, the Face Stealer). Triggered-ability mirror of the activated
             // expansion above: expand into one `GrantTrigger` per triggered ability
@@ -7109,6 +7114,46 @@ fn expand_granted_activated_abilities(
         }
     }
     out
+}
+
+/// CR 613.1f + CR 613.1d: Replace each deferred `GrantAllActivatedAbilitiesOf`
+/// meta-effect in the layer-6 bucket with its concrete `GrantAbility`
+/// expansion, resolved against the board as it stands when layer 6 begins.
+///
+/// Provider membership ("all Elf cards in your graveyard") is a function of the
+/// providers' card types and subtypes, which type-changing effects rewrite in
+/// layer 4 (Maskwood Nexus makes a graveyard creature an Elf; Conspiracy stops a
+/// printed Elf being one). CR 613.1d applies before CR 613.1f, and CR 611.3a says
+/// a static ability's effect applies to whatever its text indicates at any given
+/// moment, so the provider set must be read after the earlier layers, never from
+/// printed types at gather time.
+///
+/// The host id, host timestamp, recipient `affected_filter`, provider `source`
+/// filter and `cap` all come from the meta-effect unchanged, so
+/// [`expand_granted_activated_abilities`] resolves host identity, per-recipient
+/// controller and reference context exactly as it did at gather time. Each
+/// expansion takes its meta-effect's slot, preserving bucket order.
+fn resolve_deferred_ability_grants(
+    state: &GameState,
+    layer_bucket: &[ActiveContinuousEffect],
+) -> Vec<ActiveContinuousEffect> {
+    let mut resolved = Vec::with_capacity(layer_bucket.len());
+    for effect in layer_bucket {
+        match &effect.modification {
+            ContinuousModification::GrantAllActivatedAbilitiesOf { source, cap } => {
+                resolved.extend(expand_granted_activated_abilities(
+                    state,
+                    effect.source_id,
+                    effect.timestamp,
+                    &effect.affected_filter,
+                    source,
+                    cap.as_ref(),
+                ));
+            }
+            _ => resolved.push(effect.clone()),
+        }
+    }
+    resolved
 }
 
 /// CR 613.1f + CR 603.1 + CR 603.2: Triggered-ability mirror of
@@ -17727,6 +17772,170 @@ mod tests {
         assert!(
             !abilities.iter().any(|a| a == &live_elf_ability),
             "an Elf on the battlefield must not donate (graveyard zone axis)"
+        );
+    }
+
+    /// Thranduil (parsed from its real Oracle text) with one graveyard creature
+    /// card of `printed_subtype` carrying a distinct activated ability, plus a
+    /// type-changing permanent parsed from `changer_oracle`. Returns
+    /// `(state, thranduil, graveyard_card, donated_ability)`.
+    fn thranduil_with_type_changed_graveyard_card(
+        changer_name: &str,
+        changer_oracle: &str,
+        changer_core_type: &str,
+        changer_chosen_type: Option<&str>,
+        printed_subtype: &str,
+    ) -> (GameState, ObjectId, ObjectId, AbilityDefinition) {
+        use crate::parser::oracle::parse_oracle_text;
+        use crate::types::ability::{
+            AbilityCost, AbilityKind, ChosenAttribute, Effect, QuantityExpr,
+        };
+
+        let mut state = setup();
+        state.all_creature_types = vec!["Elf".to_string(), "Goblin".to_string()];
+
+        let thranduil = make_creature(&mut state, "Thranduil, the Elvenking", 5, 6, PlayerId(0));
+        let parsed = parse_oracle_text(
+            "Thranduil has all activated abilities of all Elf cards in your graveyard.",
+            "Thranduil, the Elvenking",
+            &[],
+            &["Creature".into()],
+            &["Elf".into(), "Noble".into()],
+        );
+        assert_eq!(parsed.statics.len(), 1, "got {:?}", parsed.statics);
+        {
+            let obj = state.objects.get_mut(&thranduil).unwrap();
+            obj.card_types.subtypes.push("Elf".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            obj.static_definitions = parsed.statics.clone().into();
+            obj.base_static_definitions = Arc::new(parsed.statics.clone());
+        }
+
+        // The type-changing permanent, built from its real Oracle text.
+        let changer = create_object(
+            &mut state,
+            CardId(0),
+            PlayerId(0),
+            changer_name.to_string(),
+            Zone::Battlefield,
+        );
+        let changer_parsed = parse_oracle_text(
+            changer_oracle,
+            changer_name,
+            &[],
+            &[changer_core_type.to_string()],
+            &[],
+        );
+        assert_eq!(
+            changer_parsed.statics.len(),
+            1,
+            "{changer_name} must parse to exactly one static; got {:?}",
+            changer_parsed.statics
+        );
+        let ts = state.next_timestamp();
+        {
+            let obj = state.objects.get_mut(&changer).unwrap();
+            obj.card_types.core_types.push(match changer_core_type {
+                "Artifact" => CoreType::Artifact,
+                _ => CoreType::Enchantment,
+            });
+            obj.base_card_types = obj.card_types.clone();
+            obj.static_definitions = changer_parsed.statics.clone().into();
+            obj.base_static_definitions = Arc::new(changer_parsed.statics.clone());
+            obj.timestamp = ts;
+            if let Some(chosen) = changer_chosen_type {
+                obj.chosen_attributes
+                    .push(ChosenAttribute::CreatureType(chosen.to_string()));
+            }
+        }
+
+        // Graveyard creature card you own, with a distinct activated ability.
+        let ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 4 },
+                player: TargetFilter::Controller,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        let card = create_object(
+            &mut state,
+            CardId(0),
+            PlayerId(0),
+            "Graveyard Creature".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&card).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push(printed_subtype.to_string());
+            obj.base_card_types = obj.card_types.clone();
+            Arc::make_mut(&mut obj.base_abilities).push(ability.clone());
+            obj.abilities = Arc::clone(&obj.base_abilities);
+        }
+
+        state.layers_dirty.mark_full();
+        (state, thranduil, card, ability)
+    }
+
+    /// CR 613.1d + CR 613.1f + CR 611.3a: a graveyard creature card that GAINS
+    /// the Elf subtype from a layer-4 effect (Maskwood Nexus: "creature cards
+    /// you own that aren't on the battlefield" are every creature type) becomes
+    /// a provider for Thranduil, because provider membership is resolved after
+    /// the type-changing layer, not from printed types. Real parser →
+    /// `flush_layers`. The positive reach-guard on the card's subtypes proves
+    /// the type change applied; reverting to gather-time provider selection
+    /// leaves the card a non-Elf and flips the grant assertion.
+    #[test]
+    fn thranduil_gains_ability_of_graveyard_card_made_an_elf_by_maskwood_nexus() {
+        let (mut state, thranduil, card, ability) = thranduil_with_type_changed_graveyard_card(
+            "Maskwood Nexus",
+            "Creatures you control are every creature type. The same is true for creature spells you control and creature cards you own that aren't on the battlefield.",
+            "Artifact",
+            None,
+            "Goblin",
+        );
+
+        flush_layers(&mut state);
+
+        let card_obj = state.objects.get(&card).unwrap();
+        assert!(
+            card_obj.card_types.subtypes.iter().any(|s| s == "Elf"),
+            "reach-guard: Maskwood Nexus must make the graveyard card an Elf; got {:?}",
+            card_obj.card_types.subtypes
+        );
+        let abilities = &state.objects.get(&thranduil).unwrap().abilities;
+        assert!(
+            abilities.iter().any(|a| a == &ability),
+            "a graveyard card that became an Elf in layer 4 must donate in layer 6;              got {abilities:?}"
+        );
+    }
+
+    /// CR 613.1d + CR 613.1f + CR 611.3a: a printed Elf in the graveyard that
+    /// LOSES the Elf subtype to a layer-4 effect (Conspiracy, chosen type
+    /// Goblin) stops being a provider. Real parser → `flush_layers`.
+    #[test]
+    fn thranduil_loses_ability_of_graveyard_elf_made_a_goblin_by_conspiracy() {
+        let (mut state, thranduil, card, ability) = thranduil_with_type_changed_graveyard_card(
+            "Conspiracy",
+            "Creatures you control are the chosen type. The same is true for creature spells you control and creature cards you own that aren't on the battlefield.",
+            "Enchantment",
+            Some("Goblin"),
+            "Elf",
+        );
+
+        flush_layers(&mut state);
+
+        let card_obj = state.objects.get(&card).unwrap();
+        assert_eq!(
+            card_obj.card_types.subtypes,
+            vec!["Goblin".to_string()],
+            "reach-guard: Conspiracy must have turned the graveyard Elf into a Goblin"
+        );
+        let abilities = &state.objects.get(&thranduil).unwrap().abilities;
+        assert!(
+            !abilities.iter().any(|a| a == &ability),
+            "a printed Elf that is no longer an Elf must not donate; got {abilities:?}"
         );
     }
 
