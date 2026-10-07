@@ -18825,7 +18825,8 @@ mod tests {
             "the unsuppressed printed static must donate the graveyard ability"
         );
 
-        assert!(attach_to(&mut state, song, thranduil).is_some());
+        attach_to(&mut state, song, thranduil);
+        assert_eq!(state.objects[&song].attached_to, Some(thranduil.into()));
         for full_reflush in [false, true] {
             if full_reflush {
                 state.layers_dirty.mark_full();

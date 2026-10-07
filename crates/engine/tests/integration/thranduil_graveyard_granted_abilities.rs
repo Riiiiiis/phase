@@ -3,6 +3,7 @@
 //! the activation source.
 
 use engine::ai_support::legal_actions;
+use engine::game::layers::{flush_layers, mark_layers_full};
 use engine::game::scenario::{GameScenario, P0};
 use engine::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, Effect, EffectKind, QuantityExpr, TargetFilter,
@@ -44,6 +45,8 @@ fn thranduil_activates_graveyard_elf_ability_as_its_own() {
         .id();
     let mut runner = scenario.build();
 
+    mark_layers_full(runner.state_mut());
+    flush_layers(runner.state_mut());
     let offered = legal_actions(runner.state());
     let ability_index = offered
         .iter()
