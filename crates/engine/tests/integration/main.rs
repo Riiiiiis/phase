@@ -7,6 +7,7 @@
 #[path = "../../src/source_census.rs"]
 mod source_census;
 
+mod aang_compound_tail;
 mod abigale_integration;
 mod ability_block_display_clone_gate;
 mod ability_cost_block_readout;
@@ -1040,6 +1041,7 @@ mod land_equilibrium_forced_sacrifice;
 mod landing_zone_this_way_quantity;
 mod lasting_cast_from_hand_permission;
 mod lasting_play_from_exile_permission;
+mod latched_control_lifetimes;
 mod latched_redirect_controller;
 mod lathiel_end_step_counters_repro;
 mod leading_duration_distribution_7923;
@@ -1788,6 +1790,7 @@ mod the_mind_stone_harness_infinity;
 mod there_are_no_permanents_state_trigger;
 mod they_gain_keyword_anaphor;
 mod three_blind_mice;
+mod thranduil_graveyard_granted_abilities;
 mod token_storm_scaling_gate;
 mod token_zone_change_index;
 mod tomb_cradle_atropal_deathtouch_runtime;
@@ -1861,6 +1864,7 @@ mod reveal_until_routed_damage_count;
 mod ripple_reveal_choice_interaction;
 mod siphon_insight_mana_rider;
 mod slow_motion_upkeep_sacrifice_return;
+mod static_provider_layer_reference;
 mod uba_mask_draw_to_exile_play;
 mod ultimate_magic_meteor_per_opponent_destroy;
 mod untap_upkeep_draw_created_steps;

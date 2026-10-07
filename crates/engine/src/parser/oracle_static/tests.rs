@@ -7,7 +7,7 @@ use super::*;
 use crate::types::ability::{
     ActivationRestriction, AggregateFunction, AttackedYouScope, AttackerBlockStatus,
     CardTypeSetSource, CommanderOwnership, Comparator, CountScope, DamageKindFilter, Duration,
-    Effect, FilterProp, ObjectProperty, ObjectScope, PlayerFilter, PlayerRelation, PlayerScope,
+    Effect, FilterProp, ControllerRef, TargetFilter, TypedFilter, ObjectProperty, ObjectScope, PlayerFilter, PlayerRelation, PlayerScope,
     PtStat, PtValueScope, QuantityExpr, QuantityRef, SharedQuality, SharedQualityRelation,
     SubtypeExclusion, TypeFilter, ZoneRef,
 };
@@ -15,6 +15,7 @@ use crate::types::counter::CounterType;
 use crate::types::keywords::{Keyword, WardCost};
 use crate::types::mana::ManaCost;
 use crate::types::statics::{AdditionalCostTaxAction, CrewAction, CrewContributionKind};
+use crate::types::zones::Zone;
 
 /// CR 613.1f (Layer 6) + CR 105.2: Scion of Draco — "Each creature you control has
 /// vigilance if it's white, hexproof if it's blue, lifelink if it's black, first
@@ -10852,9 +10853,6 @@ fn parse_grant_all_activated_abilities_artifact_cards_in_your_graveyard() {
 /// composed arm these phrases parsed to no modification at all.
 #[test]
 fn parse_grant_all_activated_abilities_subtype_cards_in_graveyard() {
-    use crate::types::ability::{ControllerRef, FilterProp, TargetFilter, TypedFilter};
-    use crate::types::zones::Zone;
-    use crate::types::TypeFilter;
     let your_graveyard = ContinuousModification::GrantAllActivatedAbilitiesOf {
         source: TargetFilter::Typed(
             TypedFilter::new(TypeFilter::Subtype("Elf".to_string())).properties(vec![
