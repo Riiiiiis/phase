@@ -18804,7 +18804,7 @@ mod tests {
         assert!(
             state.objects[&song]
                 .static_definitions
-                .iter()
+                .iter_all()
                 .any(|definition| {
                     definition.modifications.iter().any(|modification| {
                         matches!(
