@@ -13,7 +13,8 @@ use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 
 /// Complete Oracle text from `data/mtgjson/AtomicCards.json` (2026-09-22).
-const THRANDUIL: &str = "Thranduil has all activated abilities of all Elf cards in your graveyard.\n\
+const THRANDUIL: &str =
+    "Thranduil has all activated abilities of all Elf cards in your graveyard.\n\
 Whenever another legendary Elf you control enters, draw two cards, then discard a card.";
 
 #[test]

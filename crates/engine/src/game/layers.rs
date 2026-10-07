@@ -10953,11 +10953,11 @@ mod tests {
     use crate::types::ability::{
         AbilityCost, AbilityDefinition, AbilityKind, AggregateFunction, BasicLandType,
         CastManaObjectScope, CastManaSpentMetric, CastVariantPaid, ChosenAttribute,
-        ChosenSubtypeKind, CommanderOwnership, Comparator, ContinuousModification, ControllerRef, CountScope,
-        DamageChannel, DamageKindFilter, Duration, Effect, FilterProp, ManaProduction, ObjectScope,
-        PlayerFilter, PlayerRelation, PlayerScope, PtStat, PtValueScope, QuantityExpr, QuantityRef,
-        SacrificeCost, StaticCondition, StaticDefinition, TargetFilter, TriggerCondition,
-        TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
+        ChosenSubtypeKind, CommanderOwnership, Comparator, ContinuousModification, ControllerRef,
+        CountScope, DamageChannel, DamageKindFilter, Duration, Effect, FilterProp, ManaProduction,
+        ObjectScope, PlayerFilter, PlayerRelation, PlayerScope, PtStat, PtValueScope, QuantityExpr,
+        QuantityRef, SacrificeCost, StaticCondition, StaticDefinition, TargetFilter,
+        TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
     };
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::counter::{CounterMatch, CounterType};
@@ -18801,16 +18801,29 @@ mod tests {
             song_object.card_types.subtypes.push("Aura".to_string());
             song_object.base_card_types = song_object.card_types.clone();
         }
-        assert!(state.objects[&song].static_definitions.iter().any(|definition| {
-            definition.modifications.iter().any(|modification| {
-                matches!(modification, ContinuousModification::SetBasicLandType { land_type: BasicLandType::Forest })
-            })
-        }), "Song's complete Oracle text must parse to its Forest type effect");
+        assert!(
+            state.objects[&song]
+                .static_definitions
+                .iter()
+                .any(|definition| {
+                    definition.modifications.iter().any(|modification| {
+                        matches!(
+                            modification,
+                            ContinuousModification::SetBasicLandType {
+                                land_type: BasicLandType::Forest
+                            }
+                        )
+                    })
+                }),
+            "Song's complete Oracle text must parse to its Forest type effect"
+        );
 
         state.layers_dirty.mark_full();
         flush_layers(&mut state);
-        assert!(state.objects[&thranduil].abilities.contains(&donated),
-            "the unsuppressed printed static must donate the graveyard ability");
+        assert!(
+            state.objects[&thranduil].abilities.contains(&donated),
+            "the unsuppressed printed static must donate the graveyard ability"
+        );
 
         assert!(attach_to(&mut state, song, thranduil).is_some());
         for full_reflush in [false, true] {
@@ -18821,12 +18834,19 @@ mod tests {
             let host = &state.objects[&thranduil];
             assert_eq!(host.card_types.core_types, vec![CoreType::Land]);
             assert!(host.card_types.subtypes.contains(&"Forest".to_string()));
-            assert!(host.static_definitions.is_empty(),
-                "CR 305.7: Song must remove Thranduil's printed static");
-            assert!(!host.abilities.contains(&donated),
-                "a removed printed static must not donate its distinct ability");
-            assert_eq!(count_mana_abilities(host, ManaColor::Green), 1,
-                "CR 305.7: Forest must retain its intrinsic green mana ability");
+            assert!(
+                host.static_definitions.is_empty(),
+                "CR 305.7: Song must remove Thranduil's printed static"
+            );
+            assert!(
+                !host.abilities.contains(&donated),
+                "a removed printed static must not donate its distinct ability"
+            );
+            assert_eq!(
+                count_mana_abilities(host, ManaColor::Green),
+                1,
+                "CR 305.7: Forest must retain its intrinsic green mana ability"
+            );
         }
     }
 
