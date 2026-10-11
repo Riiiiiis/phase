@@ -16905,7 +16905,9 @@ fn resolve_chain_body(
             // choice the controller makes at resolution. Tokens one instruction
             // creates from one specification are interchangeable, so pairing
             // them in snapshot order is equivalent to any assignment the
-            // controller could choose among them.
+            // controller could choose among them. Pairing is in snapshot (creation)
+            // order, so tokens a replacement adds to the same event beyond the
+            // specified batch are tolerated rather than modelled.
             let iterated_created_objects: Vec<crate::types::identifiers::ObjectId> =
                 if member_driven && effect_pairs_created_objects(&effective.effect) {
                     let pairs = state

@@ -2937,6 +2937,13 @@ pub struct PendingRepeatIteration {
     /// different one of those creatures"). Indexed by iteration like
     /// `tracked_members`; each resumed iteration binds `[created, member]`.
     /// Empty when the loop pairs nothing.
+    ///
+    /// Wire contract: like `iterated_counter_kinds`, this is server-side
+    /// resolution state that no client renders or derives a fallback from, so
+    /// the `#[serde(default)]` rule in `lobby-broker`'s `PROTOCOL_VERSION` doc
+    /// applies and no bump is made. A peer that predates the field drops it
+    /// from a frame parked mid-loop, so resuming such a frame on a peer that
+    /// predates it loses the pairing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub iterated_created_objects: Vec<ObjectId>,
     pub next_iteration: usize,
