@@ -2931,6 +2931,14 @@ pub struct PendingRepeatIteration {
     /// the loop is not counter-kind-driven.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub iterated_counter_kinds: Vec<crate::types::counter::CounterType>,
+    /// CR 701.14a + CR 608.2c: the objects the preceding instruction created,
+    /// snapshotted at loop entry for a member-driven loop whose body pairs each
+    /// member with one created object ("each of those tokens fights a
+    /// different one of those creatures"). Indexed by iteration like
+    /// `tracked_members`; each resumed iteration binds `[created, member]`.
+    /// Empty when the loop pairs nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub iterated_created_objects: Vec<ObjectId>,
     pub next_iteration: usize,
     pub total_iterations: usize,
     /// CR 405.3 + CR 707.10: set on a loop that puts copies of several spells
