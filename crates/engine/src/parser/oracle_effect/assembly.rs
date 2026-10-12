@@ -1949,7 +1949,8 @@ fn declares_published_object_target(effect: &Effect) -> bool {
 ///
 /// The head must be a bare per-member token creation: one token per iteration,
 /// not attached to the iteration's object, no chained body, and repeated over
-/// an `ObjectCount` population (the objects "those creatures" names). The
+/// an opponent-controlled `ObjectCount` population (the objects "those
+/// creatures" names). The
 /// head's repeat moves to the consumer — which becomes the per-member loop —
 /// and the head folds into one instruction creating that many tokens
 /// (`try_fold_token_repeat_into_count`), so the creation is a single event.
@@ -1962,13 +1963,28 @@ fn bind_created_token_pairing(
 ) -> bool {
     let Some(
         qty @ QuantityExpr::Ref {
-            qty: QuantityRef::ObjectCount { .. },
+            qty: QuantityRef::ObjectCount { filter },
         },
-    ) = head.repeat_for.clone()
+    ) = &head.repeat_for
     else {
         return false;
     };
-    if head.sub_ability.is_some() || !try_fold_token_repeat_into_count(head.effect.as_mut(), &qty) {
+    // CR 608.2c + CR 111.2: "those creatures" names the population the creation
+    // was repeated for, never the instruction's own tokens. The paired loop
+    // re-counts that population after the tokens exist, so it binds only when
+    // the population is opponent-controlled: the tokens enter under the
+    // creating player's control and can never be counted into it. A population
+    // the tokens could join ("For each creature you control, create …") fails
+    // closed.
+    let counts_only_opponent_objects = matches!(
+        filter,
+        TargetFilter::Typed(typed) if typed.controller == Some(ControllerRef::Opponent)
+    );
+    let qty = qty.clone();
+    if !counts_only_opponent_objects
+        || head.sub_ability.is_some()
+        || !try_fold_token_repeat_into_count(head.effect.as_mut(), &qty)
+    {
         return false;
     }
     head.repeat_for = None;
@@ -3681,11 +3697,16 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                             )
                         {
                             rewrite_singular_battlefield_recall_to_self(&mut current.effect);
-                        } else if paired_created_fight {
+                        } else if !matches!(
+                            &*current.effect,
+                            Effect::Fight {
+                                subject: TargetFilter::LastCreated,
+                                ..
+                            }
+                        ) {
                             // CR 608.2c: a paired created-object fight (bound
-                            // above) reads `ParentTarget` as the loop's
+                            // above) keeps `ParentTarget` as the loop's
                             // per-iteration member, not the chain's tracked set.
-                        } else {
                             if plural_library_recall {
                                 rewrite_plural_library_recall_to_tracked_set(&mut current.effect);
                             }
