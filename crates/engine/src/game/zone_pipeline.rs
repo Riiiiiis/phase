@@ -2095,13 +2095,17 @@ pub(crate) fn apply_zone_delivery_tail(
                 // death, `Effect::Destroy`, `Effect::Sacrifice`, none of which
                 // resolve through an ability chain) needs, since those callers
                 // have no `ResolvedAbility` to run the ability-level half of
-                // that check against.
+                // that check against. CR 607.2q: a tracked exile made while its
+                // source is a spell being cast pays that cast's cost, so its kind
+                // is `CastCost` (`exile_links::tracked_link_kind`).
                 _ if matches!(exile_tracking, ZoneDeliveryExileTracking::TrackBySource)
                     || crate::game::exile_links::source_is_linked_exile_consumer(
                         state, source_id,
                     ) =>
                 {
-                    Some(ExileLinkKind::TrackedBySource)
+                    Some(crate::game::exile_links::tracked_link_kind(
+                        state, source_id,
+                    ))
                 }
                 _ => None,
             };
@@ -4114,16 +4118,13 @@ pub(crate) fn deliver_replaced_zone_change(
                     duration_subject: ObjectIncarnationRef::from_object(&state.objects[&object_id]),
                     duration: copy.sacrifice_at.unwrap_or(Duration::Permanent),
                     values: *copy.values,
-                    display_source: copy.display_source,
-                    printed_ref: copy.printed_ref,
-                    token_image_ref: copy.token_image_ref,
                     // The recipient keeps its own base (Clone is a 0/0
                     // Shapeshifter underneath), so it rides the source's
                     // captured descriptor — or the legacy live-field search
-                    // when the source had none — exactly like the exact refs
-                    // above. Created copy-tokens never pass through here;
-                    // their descriptor is derived by the creation injectors.
-                    token_art: copy.token_art,
+                    // when the source had none — exactly like the exact refs.
+                    // Created copy-tokens never pass through here; their
+                    // descriptor is derived by the creation injectors.
+                    display: copy.display,
                     additional_modifications: copy.additional_modifications,
                     effect_kind: EffectKind::BecomeCopy,
                 };
