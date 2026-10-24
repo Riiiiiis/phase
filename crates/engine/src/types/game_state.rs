@@ -52489,6 +52489,7 @@ mod restored_exact_attack_authority_tests {
                     ability: node.clone(),
                     tracked_members: vec![],
                     iterated_counter_kinds: vec![],
+                    iterated_created_objects: vec![],
                     next_iteration: 0,
                     total_iterations: 1,
                     copy_order_fixed: None,
