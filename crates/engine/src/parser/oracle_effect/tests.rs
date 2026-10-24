@@ -3029,6 +3029,7 @@ fn prepared_designation_subject_unclassified_subject_stays_single() {
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     };
     let yours = TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You));
 
@@ -23821,6 +23822,200 @@ fn put_counter_each_of_them_is_parent_target_not_put_counter_all() {
             } if *ct == CounterType::Plus1Plus1
         ),
         "each-of-them anaphor must stay PutCounter {{ ParentTarget }}, got {e:?}"
+    );
+}
+
+/// The effect of the first sub-ability after a leading `Token` head.
+fn sub_after_token_head(def: &AbilityDefinition) -> &AbilityDefinition {
+    assert!(
+        matches!(def.effect.as_ref(), Effect::Token { .. }),
+        "chain must start with the token clause, got {:?}",
+        def.effect
+    );
+    def.sub_ability
+        .as_deref()
+        .expect("a clause must follow the token clause")
+}
+
+/// SHAPE — CR 608.2c + CR 111.1: "each of them" right after a token clause is
+/// the just-created tokens (`LastCreated`), routed to `PutCounter` (the bounded
+/// anaphor), never to the battlefield-scanning `PutCounterAll`.
+/// REVERT-PROBE: drop `LastCreated` from `counter_target_is_bounded_anaphor`
+/// and the head mis-promotes to `PutCounterAll { LastCreated }`.
+#[test]
+fn put_counter_each_of_them_after_token_clause_is_last_created_put_counter() {
+    let def = parse_effect_chain(
+        "Create two 0/0 green and blue Fractal creature tokens. Put a +1/+1 counter on each of them.",
+        AbilityKind::Spell,
+    );
+    assert_attachment_chain_has_no_unimplemented(&def);
+    let put = sub_after_token_head(&def);
+    assert_eq!(
+        put.effect.as_ref(),
+        &Effect::PutCounter {
+            counter_type: CounterType::Plus1Plus1,
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::LastCreated,
+        }
+    );
+}
+
+/// SHAPE — the compound Snarl Song shape ("... on each of them and you gain 2
+/// life") routes through the same site and keeps the life-gain conjunct.
+#[test]
+fn put_counter_each_of_them_compound_after_token_clause_is_last_created_put_counter() {
+    let def = parse_effect_chain(
+        "Create two 0/0 green and blue Fractal creature tokens. Put a +1/+1 counter on each of them and you gain 2 life.",
+        AbilityKind::Spell,
+    );
+    assert_attachment_chain_has_no_unimplemented(&def);
+    let put = sub_after_token_head(&def);
+    assert_eq!(
+        put.effect.as_ref(),
+        &Effect::PutCounter {
+            counter_type: CounterType::Plus1Plus1,
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::LastCreated,
+        }
+    );
+    let gain = put
+        .sub_ability
+        .as_deref()
+        .expect("life-gain conjunct must follow");
+    assert!(
+        matches!(gain.effect.as_ref(), Effect::GainLife { .. }),
+        "compound tail must be reached, got {:?}",
+        gain.effect
+    );
+}
+
+/// SHAPE — the for-each twin goes through the "put a counter on <target> for
+/// each X" dispatch, which consults `counter_anaphor_created_token_binding`
+/// directly. Paired control: with no token clause the anaphor stays
+/// `ParentTarget`.
+#[test]
+fn put_counter_each_of_them_for_each_after_token_clause_is_last_created() {
+    let def = parse_effect_chain(
+        "Create two 0/0 green and blue Fractal creature tokens. Put a +1/+1 counter on each of them for each card in your graveyard.",
+        AbilityKind::Spell,
+    );
+    assert_attachment_chain_has_no_unimplemented(&def);
+    let put = sub_after_token_head(&def);
+    let Effect::PutCounter { target, .. } = put.effect.as_ref() else {
+        panic!("expected PutCounter, got {:?}", put.effect);
+    };
+    assert_eq!(target, &TargetFilter::LastCreated);
+
+    let control = parse_effect_chain(
+        "Put a +1/+1 counter on each of them for each card in your graveyard.",
+        AbilityKind::Spell,
+    );
+    let Effect::PutCounter { target, .. } = control.effect.as_ref() else {
+        panic!("expected PutCounter control, got {:?}", control.effect);
+    };
+    assert_eq!(target, &TargetFilter::ParentTarget);
+}
+
+/// SHAPE — CR 608.2c + CR 111.1: the move-counters consumer binds "on each of
+/// them" exactly like its "on them" sibling after a token clause. Paired
+/// control: with no token clause it stays `ParentTarget`.
+#[test]
+fn move_counters_on_each_of_them_after_token_clause_matches_on_them() {
+    fn move_target(text: &str) -> TargetFilter {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let mut current = Some(&def);
+        while let Some(ability) = current {
+            if let Effect::MoveCounters { target, .. } = ability.effect.as_ref() {
+                return target.clone();
+            }
+            current = ability.sub_ability.as_deref();
+        }
+        panic!("no MoveCounters in chain for {text:?}: {def:#?}");
+    }
+    let each = move_target(
+        "Create two 0/0 green and blue Fractal creature tokens. Put its counters on each of them.",
+    );
+    let plain = move_target(
+        "Create two 0/0 green and blue Fractal creature tokens. Put its counters on them.",
+    );
+    assert_eq!(each, TargetFilter::LastCreated);
+    assert_eq!(each, plain);
+    assert_eq!(
+        move_target("Put its counters on each of them."),
+        TargetFilter::ParentTarget
+    );
+}
+
+/// SHAPE — Recursive Recruitment, verbatim Oracle text. The counter clause is
+/// gated on a graveyard cast and places floor(graveyard / 3) +1/+1 counters on
+/// each created Cadet; nothing in the chain stays unimplemented.
+#[test]
+fn recursive_recruitment_full_card_shape() {
+    let parsed = parse_oracle_text(
+        "Create two 2/2 colorless Wizard Soldier creature tokens named Cadet. If this spell was cast from a graveyard, put a +1/+1 counter on each of them for every three cards in your graveyard.\nFlashback {6}{U}{B}",
+        "Recursive Recruitment",
+        &["Flashback".to_string()],
+        &["Sorcery".to_string()],
+        &[],
+    );
+    let spell = parsed
+        .abilities
+        .iter()
+        .find(|a| matches!(a.effect.as_ref(), Effect::Token { .. }))
+        .expect("spell ability must start with the Cadet token clause");
+    assert_attachment_chain_has_no_unimplemented(spell);
+    let Effect::Token { name, count, .. } = spell.effect.as_ref() else {
+        unreachable!()
+    };
+    assert_eq!(name, "Cadet");
+    assert_eq!(count, &QuantityExpr::Fixed { value: 2 });
+    let put = spell
+        .sub_ability
+        .as_deref()
+        .expect("counter clause must follow the token clause");
+    let Effect::PutCounter {
+        counter_type,
+        count,
+        target,
+    } = put.effect.as_ref()
+    else {
+        panic!("expected PutCounter, got {:?}", put.effect);
+    };
+    assert_eq!(counter_type, &CounterType::Plus1Plus1);
+    assert!(
+        matches!(
+            count,
+            QuantityExpr::DivideRounded {
+                divisor: 3,
+                rounding: RoundingMode::Down,
+                ..
+            }
+        ),
+        "count must be floor(graveyard / 3), got {count:?}"
+    );
+    assert_eq!(target, &TargetFilter::LastCreated);
+    assert_eq!(
+        put.condition,
+        Some(AbilityCondition::WasCast {
+            zone: Some(Zone::Graveyard)
+        })
+    );
+}
+
+/// Coverage honesty: a "for every K" tail whose noun does not parse is NOT
+/// accepted — the clause stays `Unimplemented`, while the token clause before
+/// it is reached and lowered (positive guard).
+#[test]
+fn put_counter_for_every_unparsable_noun_stays_unimplemented() {
+    let def = parse_effect_chain(
+        "Create two 2/2 colorless Wizard Soldier creature tokens named Cadet. Put a +1/+1 counter on each of them for every three frobnications.",
+        AbilityKind::Spell,
+    );
+    let tail = sub_after_token_head(&def);
+    assert!(
+        matches!(tail.effect.as_ref(), Effect::Unimplemented { .. }),
+        "nonsense for-every tail must stay unimplemented, got {:?}",
+        tail.effect
     );
 }
 
@@ -89102,6 +89297,7 @@ mod carried_player_reference_tests {
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         }
     }
 
@@ -89262,6 +89458,7 @@ mod carried_player_reference_tests {
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         };
         let mut gain = gain_life_controller();
         inject_subject_target(
@@ -91132,6 +91329,7 @@ mod controller_anaphor_antecedent_writer_tests {
             multi_target,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         }
     }
 
@@ -92891,4 +93089,75 @@ fn an_unmodelled_player_relative_clause_is_an_unbound_subject() {
         "{:?}",
         each_of.effect
     );
+}
+
+#[test]
+fn search_reveal_continuation_keeps_the_searched_player_as_that_player() {
+    for text in [
+        "Search target opponent's library for a card and reveal it. That player loses 2 life.",
+        "Search target opponent's library for a card. That player loses 2 life.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let group = def
+            .declares_chosen_group
+            .expect("search declares its player");
+        let lose = chain_defs(&def)
+            .into_iter()
+            .find_map(|d| match &*d.effect {
+                Effect::LoseLife { target, .. } => Some(target.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no LoseLife in {text}: {def:?}"));
+        assert_eq!(lose, Some(TargetFilter::DeclaredPlayer { group }), "{text}");
+    }
+}
+
+#[test]
+fn that_player_chooser_without_a_declared_player_is_not_bound_to_one() {
+    let def = parse_effect_chain(
+        "Choose two target creatures controlled by the same opponent. That player chooses one of those creatures. Trial of Agony deals 5 damage to that creature, and the other can't block this turn.",
+        AbilityKind::Spell,
+    );
+    assert!(!chain_has_unimplemented(&def), "{def:?}");
+    let chooser = chain_defs(&def)
+        .into_iter()
+        .find_map(|d| match &*d.effect {
+            Effect::ChooseFromZone { chooser, .. } => Some(*chooser),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no ChooseFromZone: {def:?}"));
+    assert!(
+        !matches!(chooser, ZoneChoiceChooser::DeclaredPlayer { .. }),
+        "{chooser:?}"
+    );
+}
+
+#[test]
+fn only_that_player_binds_the_declared_player_as_zone_chooser() {
+    let chooser_of = |text: &str| {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let chooser = chain_defs(&def).into_iter().find_map(|d| match &*d.effect {
+            Effect::ChooseFromZone { chooser, .. } => Some(*chooser),
+            _ => None,
+        });
+        (chooser, chain_has_unimplemented(&def), def)
+    };
+    let (chooser, unimplemented, def) = chooser_of(
+        "Search target opponent's library for four cards with different names and reveal them. That player chooses two of those cards. Put the chosen cards into the player's graveyard and the rest into your hand. Then that player shuffles their library.",
+    );
+    assert!(
+        matches!(chooser, Some(ZoneChoiceChooser::DeclaredPlayer { .. })) && !unimplemented,
+        "{def:?}"
+    );
+    for text in [
+        "Search target opponent's library for four cards with different names and reveal them. Its controller chooses two of those cards. Put the chosen cards into the player's graveyard and the rest into your hand.",
+        "Search target opponent's library for four cards with different names and reveal them. Tap target creature. Its controller chooses two of those cards. Put the chosen cards into the player's graveyard and the rest into your hand.",
+    ] {
+        let (chooser, unimplemented, def) = chooser_of(text);
+        assert!(
+            !matches!(chooser, Some(ZoneChoiceChooser::DeclaredPlayer { .. })),
+            "{text}: {def:?}"
+        );
+        assert!(unimplemented, "{text}: {def:?}");
+    }
 }
