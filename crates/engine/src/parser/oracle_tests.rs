@@ -35065,10 +35065,32 @@ fn for_each_token_creation_with_an_unrelated_sibling_keeps_its_loop() {
         ),
         "the creation keeps its per-member loop: {chain:#?}"
     );
+    assert_eq!(chain.len(), 2, "{chain:#?}");
+    let sibling = chain[1];
     assert!(
-        chain.len() >= 2,
-        "reach: the sibling sentence parsed: {chain:#?}"
+        matches!(
+            &*sibling.effect,
+            Effect::GenericEffect {
+                static_abilities,
+                duration: Some(Duration::UntilEndOfTurn),
+                target: None,
+                ..
+            } if matches!(
+                static_abilities.as_slice(),
+                [sd] if sd.mode == StaticMode::Continuous
+                    && sd.affected
+                        == Some(TargetFilter::Typed(
+                            TypedFilter::creature().controller(ControllerRef::You),
+                        ))
+                    && sd.modifications
+                        == [ContinuousModification::AddKeyword {
+                            keyword: Keyword::Indestructible,
+                        }]
+            )
+        ),
+        "reach: the sibling sentence parsed as its indestructible grant: {chain:#?}"
     );
+    assert_eq!(sibling.sub_link, SubAbilityLink::SequentialSibling);
 }
 
 /// CR 608.2c + CR 111.2 fail-closed: the paired loop re-counts "those
